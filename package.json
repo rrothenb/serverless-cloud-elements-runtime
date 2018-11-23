@@ -1,0 +1,18 @@
+{
+  "name": "serverless-cloud-elements-runtime",
+  "version": "0.1.0",
+  "description": "The runtime component of the serverless-cloud-elements-plugin",
+  "main": "serverlessCheckpointer.js",
+  "dependencies": {
+    "aws-sdk": "^2.348.0",
+    "flatted": "^1.0.3",
+    "pako": "^1.0.6",
+    "regenerator-runtime": "^0.12.1",
+    "superagent": "^3.8.2"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "",
+  "license": "MIT"
+}
