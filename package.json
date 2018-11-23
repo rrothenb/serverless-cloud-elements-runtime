@@ -1,6 +1,6 @@
 {
   "name": "serverless-cloud-elements-runtime",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "The runtime component of the serverless-cloud-elements-plugin",
   "main": "serverlessCheckpointer.js",
   "dependencies": {
@@ -13,6 +13,6 @@
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
   },
-  "author": "",
+  "author": "Rick Rothenberg",
   "license": "MIT"
 }
