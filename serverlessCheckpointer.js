@@ -61,7 +61,7 @@ module.exports.wrapper = function(handler) {
             console.log('Restarting with state for', Object.keys(stack).join(', '))
           }
         } else {
-          console.log('caught', e)
+          callback(e)
           throw e;
         }
       }
