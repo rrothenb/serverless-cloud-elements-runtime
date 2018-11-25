@@ -1,6 +1,6 @@
 {
   "name": "serverless-cloud-elements-runtime",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "The runtime component of the serverless-cloud-elements-plugin",
   "main": "serverlessCheckpointer.js",
   "dependencies": {

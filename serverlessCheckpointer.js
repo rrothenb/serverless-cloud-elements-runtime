@@ -31,8 +31,6 @@ module.exports.wrapper = function(handler) {
       const serializedState = pako.inflate(compressedStack, {to: 'string'})
       stack = parse(serializedState, reviver).stack
       console.log('Restarting with state for', Object.keys(stack).join(', '))
-    } else {
-      console.log('Handling event', event)
     }
     while (!done) {
       try {
