@@ -59,6 +59,57 @@ module.exports.wrapper = function(handler) {
             console.log('Restarting with state for', Object.keys(stack).join(', '))
           }
         } else {
+          if (context.invokedFunctionArn && event.Records && event.Records.length === 1 && event.Records[0].eventSource === 'aws:sqs') {
+            if (Number(event.Records[0].attributes.ApproximateReceiveCount) > Number(process.env.SCEP_MAX_CHECKPOINT_RETRIES)) {
+              console.log(e)
+              console.log(e.status)
+              console.log(e.body)
+              let error = e;
+              if (e.status && e.response && e.response.body && e.response.body.message) {
+                error = e.response.body;
+                error.status = e.status;
+              }
+              const region = context.invokedFunctionArn.split(':')[3]
+              const account = context.invokedFunctionArn.split(':')[4]
+              console.log(context)
+              const serviceName = context.functionName.replace(/-[^-]+-[^-]+$/, '')
+              const queueName = `${serviceName}-dead-letter-queue`
+              const sqs = new AWS.SQS({region})
+              const queueUrl = `https://sqs.${region}.amazonaws.com/${account}/${queueName}`
+              const compressedStack = Buffer.from(event.Records[0].body, 'base64').toString('utf-8')
+              const serializedState = pako.inflate(compressedStack, {to: 'string'})
+              return sqs.sendMessage(
+                {
+                  MessageBody: serializedState,
+                  QueueUrl: queueUrl,
+                  MessageAttributes: {
+                    compressed: {
+                      DataType: 'String',
+                      StringValue: 'false'
+                    },
+                    function: {
+                      DataType: 'String',
+                      StringValue: context.functionName
+                    },
+                    error: {
+                      DataType: 'String',
+                      StringValue: JSON.stringify(error)
+                    }
+                  }
+                }).promise().then(r => {
+                if (e.status) {
+                  if (e.status === 500) {
+                    callback(null, {statusCode: 502, body: e});
+                  } else {
+                    callback(null, {statusCode: e.status, body: e});
+                  }
+                } else {
+                  callback(null, {statusCode: 500, body: e});
+                }
+                return
+              })
+            }
+          }
           callback(e)
           throw e;
         }
@@ -132,4 +183,53 @@ const revivers = {}
 
 module.exports.register = function(classDef, reviver) {
   revivers[classDef.name] = reviver
+}
+
+module.exports.resume = async function(event, context, callback) {
+  console.log(event.queryStringParameters.messageId)
+  console.log(context)
+  if (context.invokedFunctionArn) {
+    const region = context.invokedFunctionArn.split(':')[3]
+    const account = context.invokedFunctionArn.split(':')[4]
+    const serviceName = context.functionName.replace(/-[^-]+-[^-]+$/, '')
+    const dlqName = `${serviceName}-dead-letter-queue`
+    const sqs = new AWS.SQS({region})
+    const dlqUrl = `https://sqs.${region}.amazonaws.com/${account}/${dlqName}`
+    while (true) {
+      const response = await sqs.receiveMessage(
+        {
+          QueueUrl: dlqUrl,
+          AttributeNames: ['All'],
+          WaitTimeSeconds: 1,
+          VisibilityTimeout: 5,
+          MessageAttributeNames: ['All']
+        }).promise()
+      console.log(response)
+      if (!response.Messages) {
+        callback(null, {statusCode: 404, body: JSON.stringify({message: `Message ${event.queryStringParameters.messageId} not found in dead letter queue`})})
+        return response
+      }
+      if (response.Messages.length === 1 && response.Messages[0].MessageId === event.queryStringParameters.messageId) {
+        const message = response.Messages[0];
+        const body = message.MessageAttributes.compressed.StringValue === 'true' ? message.Body : pako.deflate(message.Body, {to: 'string'})
+        const queueName = message.MessageAttributes.function.StringValue + '-queue'
+        const queueUrl = `https://sqs.${region}.amazonaws.com/${account}/${queueName}`
+        console.log(body)
+        console.log(queueUrl)
+        const sendResponse = await sqs.sendMessage(
+          {
+            MessageBody: Buffer.from(body).toString('base64'),
+            QueueUrl: queueUrl
+          }).promise()
+        console.log(sendResponse)
+        const deleteResponse = await sqs.deleteMessage({
+          QueueUrl: dlqUrl,
+          ReceiptHandle: message.ReceiptHandle
+        }).promise()
+        console.log(deleteResponse)
+        callback(null, {statusCode: 200, body: JSON.stringify({message: 'Message requeued'})})
+        return response
+      }
+    }
+  }
 }
