@@ -8,7 +8,8 @@
     "flatted": "^1.0.3",
     "pako": "^1.0.6",
     "regenerator-runtime": "^0.12.1",
-    "superagent": "^3.8.2"
+    "superagent": "^3.8.2",
+    "uuid": "^3.3.2"
   },
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"

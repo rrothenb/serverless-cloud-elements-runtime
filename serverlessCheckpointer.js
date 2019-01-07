@@ -2,8 +2,11 @@ require("regenerator-runtime/runtime");
 
 const AWS = require('aws-sdk')
 
+const {platformSDK} = require('./platformSDK')
+
 const pako = require('pako');
 const {parse, stringify} = require('flatted/cjs');
+const uuidv4 = require('uuid/v4');
 
 function reviver(key, value) {
   if (value && value.checkpointedClassName && value.checkpointedRepresentation && revivers[value.checkpointedClassName]) {
@@ -231,5 +234,160 @@ module.exports.resume = async function(event, context, callback) {
         return response
       }
     }
+  }
+}
+
+module.exports.resourceSetCRUD = async function(event, context, callback) {
+  if (!event.headers.Authorization) {
+    callback(null, {statusCode: 401, body: JSON.stringify({message: 'Must provide Cloud Elements authorization header'})})
+    return
+  }
+  if (event.headers.Authorization.split(', ').length !== 2) {
+    callback(null, {statusCode: 401, body: JSON.stringify({message: 'Invalid authorization header'})})
+    return
+  }
+  const orgToken =
+    event.headers.Authorization.split(', ')
+      .filter(token => token.startsWith('Organization'))[0]
+      .split(' ')[1]
+  if (process.env.ORG_TOKEN !== orgToken) {
+    callback(null, {statusCode: 401, body: JSON.stringify({message: 'Invalid org token'})})
+    return
+  }
+  if (!context.invokedFunctionArn) {
+    callback(null, {statusCode: 501, body: JSON.stringify({message: 'Not supported locally'})})
+    return
+  }
+  const userToken =
+    event.headers.Authorization.split(', ')
+      .filter(token => token.startsWith('User'))[0]
+      .split(' ')[1]
+  const region = context.invokedFunctionArn.split(':')[3]
+  const platform = new platformSDK(process.env.BASE_URL, event.headers.Authorization)
+  const dynamodb = new AWS.DynamoDB({apiVersion: '2012-08-10', region: region, params: {TableName: process.env.TABLE_NAME}})
+  const variables = JSON.parse(process.env.VARIABLES)
+  const triggerVariables = JSON.parse(process.env.TRIGGER_VARIABLES)
+  const defaults = JSON.parse(process.env.DEFAULTS)
+  if (event.httpMethod === 'POST') {
+    const uuid = uuidv4()
+    const body = JSON.parse(event.body)
+    if (Object.keys(body).length != variables.length) {
+      callback(null, {statusCode: 400, body: JSON.stringify({message: 'Supported fields: ' + variables.join(', ')})})
+      return
+    }
+    const item = {
+      id: {S: uuid},
+      createdAt: {S: `${new Date().toISOString()}`},
+      userToken: {S: userToken}
+    }
+    for (let variable of variables) {
+      if (!body[variable]) {
+        callback(null, {statusCode: 400, body: JSON.stringify({message: 'Required field missing: ' + variable})})
+        return
+      }
+      if (isNaN(body[variable])) {
+        callback(null, {statusCode: 400, body: JSON.stringify({message: 'Value must be numeric: ' + body[variable]})})
+        return
+      }
+      item[variable + '_id'] = {N: `${body[variable]}`}
+      try {
+        const instance = await platform.getInstanceById(body[variable]).run()
+        item[`${variable}_token`] = {S: instance.token}
+        console.log(item)
+      } catch (e) {
+        callback(null, {statusCode: 400, body: JSON.stringify({message: 'Instance not found: ' + body[variable]})})
+        return
+      }
+    }
+    for (let triggerVariable of triggerVariables) {
+      if (defaults[triggerVariable] === body[triggerVariable]) {
+        callback(null, {statusCode: 400, body: JSON.stringify({message: 'Field must not match default: ' + triggerVariable})})
+        return
+      }
+      const response = await dynamodb.query({
+        IndexName: `${triggerVariable}-index`,
+        KeyConditionExpression: `${triggerVariable}_id = :${triggerVariable}_id`,
+        ExpressionAttributeValues: {
+          [`:${triggerVariable}_id`]: {
+            N: `${body[triggerVariable]}`
+          }
+        }
+      }).promise()
+      if (response.Items.length > 0) {
+        callback(null, {statusCode: 400, body: JSON.stringify({message: 'Field must be unique: ' + triggerVariable})})
+        return
+      }
+    }
+    const postResponse = await dynamodb.putItem({
+      Item: item
+    }).promise()
+    const baseEventUrl = `https://${event.requestContext.domainName}/${event.requestContext.stage}/event`
+    for (let triggerVariable of triggerVariables) {
+      await platform.updateInstanceById(body[triggerVariable], {
+        configuration: {
+          'event.notification.callback.url': `${baseEventUrl}/${triggerVariable}`,
+          'event.notification.enabled': 'true'
+        }
+      }).run();
+    }
+    body.id = uuid
+    body.createdAt = item.createdAt.S
+    callback(null, {statusCode: 200, body: JSON.stringify(body)})
+  } else if (event.httpMethod === 'GET' && !event.pathParameters) {
+    const response = await dynamodb.query({
+      KeyConditionExpression: 'userToken = :userToken',
+      ExpressionAttributeValues: {
+        [':userToken']: {
+          S: userToken
+        }
+      }
+    }).promise()
+    const resourceSets = response.Items.map(item => {
+      const resourceSet = {
+        id: item.id.S,
+        createdAt: item.createdAt.S
+      }
+      for (let variable of variables) {
+        resourceSet[variable] = Number(item[variable + '_id'].N)
+      }
+      return resourceSet
+    })
+    callback(null, {statusCode: 200, body: JSON.stringify(resourceSets)})
+  } else if (event.httpMethod === 'DELETE' && event.pathParameters) {
+    const getResponse = await dynamodb.getItem({
+      Key: {
+        id: {
+          S: event.pathParameters.id
+        },
+        userToken: {
+          S: userToken
+        }
+      }
+    }).promise()
+    if (!getResponse.Item) {
+      callback(null, {statusCode: 404, body: JSON.stringify({message: 'Resource set not found'})})
+      return
+    }
+    for (let triggerVariable of triggerVariables) {
+      await platform.updateInstanceById(getResponse.Item[triggerVariable + '_id'].N, {
+        configuration: {
+          'event.notification.enabled': 'false'
+        }
+      }).run();
+    }
+    const response = await dynamodb.deleteItem({
+      Key: {
+        id: {
+          S: event.pathParameters.id
+        },
+        userToken: {
+          S: userToken
+        }
+      }
+    }).promise()
+    callback(null, {statusCode: 200})
+  } else {
+    console.log(event, context)
+    callback(null, {statusCode: 501, body: JSON.stringify({message: 'Currently unsupported method: ' + event.httpMethod})})
   }
 }
