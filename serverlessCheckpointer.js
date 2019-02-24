@@ -391,3 +391,20 @@ module.exports.resourceSetCRUD = async function(event, context, callback) {
     callback(null, {statusCode: 501, body: JSON.stringify({message: 'Currently unsupported method: ' + event.httpMethod})})
   }
 }
+
+module.exports.buildConfig = function(path, instanceId, baseUrl, authHeader, variables) {
+  const triggerVarName = path.split('/').pop()
+  const triggerVar = variables.find(variable => variable.name === triggerVarName)
+  const config = {}
+  if (instanceId === triggerVar.id) {
+    for (let variable of variables) {
+      if (variable) {
+        const sdkName = variable.type + 'SDK'
+        const sdkPath = process.cwd() + '/sdks/' + sdkName + '.js'
+        const constructor = require(sdkPath)[sdkName]
+        config[variable.name] = new constructor(baseUrl, authHeader + ', Element ' + variable.token)
+      }
+    }
+  }
+  return config
+}
