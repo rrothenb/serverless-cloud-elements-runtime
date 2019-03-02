@@ -264,7 +264,7 @@ module.exports.resourceSetCRUD = async function(event, context, callback) {
       .split(' ')[1]
   const region = context.invokedFunctionArn.split(':')[3]
   const platform = new platformSDK(process.env.BASE_URL, event.headers.Authorization)
-  const dynamodb = new AWS.DynamoDB({apiVersion: '2012-08-10', region: region, params: {TableName: process.env.TABLE_NAME}})
+  const dynamodb = new AWS.DynamoDB({apiVersion: '2012-08-10', region: region, params: {TableName: process.env.RESOURCE_SETS_TABLE_NAME}})
   const variables = JSON.parse(process.env.VARIABLES)
   const triggerVariables = JSON.parse(process.env.TRIGGER_VARIABLES)
   const defaults = JSON.parse(process.env.DEFAULTS)
@@ -392,17 +392,37 @@ module.exports.resourceSetCRUD = async function(event, context, callback) {
   }
 }
 
-module.exports.buildConfig = function(path, instanceId, baseUrl, authHeader, variables) {
+module.exports.buildConfig = async function(context, path, instanceId, baseUrl, authHeader, variables) {
   const triggerVarName = path.split('/').pop()
   const triggerVar = variables.find(variable => variable.name === triggerVarName)
   const config = {}
-  if (instanceId === triggerVar.id) {
+  if (instanceId === triggerVar.id || !context.invokedFunctionArn || !path || !instanceId) {
     for (let variable of variables) {
       if (variable) {
         const sdkName = variable.type + 'SDK'
         const sdkPath = process.cwd() + '/sdks/' + sdkName + '.js'
         const constructor = require(sdkPath)[sdkName]
         config[variable.name] = new constructor(baseUrl, authHeader + ', Element ' + variable.token)
+      }
+    }
+  } else {
+    const region = context.invokedFunctionArn.split(':')[3]
+    const dynamodb = new AWS.DynamoDB({apiVersion: '2012-08-10', region: region, params: {TableName: process.env.RESOURCE_SETS_TABLE_NAME}})
+    const response = await dynamodb.query({
+      IndexName: `${triggerVarName}-index`,
+      KeyConditionExpression: `${triggerVarName}_id = :${triggerVarName}_id`,
+      ExpressionAttributeValues: {
+        [`:${triggerVarName}_id`]: {
+          N: `${instanceId}`
+        }
+      }
+    }).promise()
+    for (let variable of variables) {
+      if (variable) {
+        const sdkName = variable.type + 'SDK'
+        const sdkPath = process.cwd() + '/sdks/' + sdkName + '.js'
+        const constructor = require(sdkPath)[sdkName]
+        config[variable.name] = new constructor(baseUrl, authHeader + ', Element ' + response.Items[0][variable.name + '_token'].S)
       }
     }
   }
