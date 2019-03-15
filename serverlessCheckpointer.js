@@ -393,10 +393,10 @@ module.exports.resourceSetCRUD = async function(event, context, callback) {
 }
 
 module.exports.buildConfig = async function(context, path, instanceId, baseUrl, authHeader, variables) {
-  const triggerVarName = path.split('/').pop()
-  const triggerVar = variables.find(variable => variable.name === triggerVarName)
+  const triggerVarName = path ? path.split('/').pop() : null
+  const triggerVar = path ? variables.find(variable => variable && variable.name === triggerVarName) : {}
   const config = {}
-  if (instanceId === triggerVar.id || !context.invokedFunctionArn || !path || !instanceId) {
+  if (!triggerVar || instanceId === triggerVar.id || !context.invokedFunctionArn || !path || !instanceId) {
     for (let variable of variables) {
       if (variable) {
         const sdkName = variable.type + 'SDK'
